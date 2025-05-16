@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "76707154475",
+    "firebase_url": "https://smarthub-60812-default-rtdb.firebaseio.com",
+    "project_id": "smarthub-60812",
+    "storage_bucket": "smarthub-60812.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:76707154475:android:a8d172edc8e808513f386e",
+        "android_client_info": {
+          "package_name": "com.mycompany.reko"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDbArT6Ghvz3_MOF1avsRot5i9gjVb2ML8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
