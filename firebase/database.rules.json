@@ -1,0 +1,43 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    
+    "rooms": {
+      ".read": "auth != null",
+      ".write": false,
+      "$roomId": {
+        ".read": "auth != null && data.child('userId').val() === auth.uid",
+        ".write": "auth != null && (newData.child('userId').val() === auth.uid || !data.exists())"
+      }
+    },
+    
+    "esp_control": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    
+    "esp_status": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    
+    "health_data": {
+      "$uid": {
+        ".read": "$uid === auth.uid",
+        ".write": "$uid === auth.uid",
+        "heart_rate": {
+          ".indexOn": ["timestamp"]
+        },
+        "temperature": {
+          ".indexOn": ["timestamp"]
+        }
+      }
+    },
+    "messages": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["timestamp"]
+    }
+  }
+} 
