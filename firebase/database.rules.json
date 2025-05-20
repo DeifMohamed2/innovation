@@ -3,6 +3,33 @@
     ".read": false,
     ".write": false,
     
+    "chairs": {
+      ".read": true,
+      ".write": true,
+      "$chairId": {
+        ".read": true,
+        ".write": true,
+        "commands": {
+          ".read": true,
+          ".write": true,
+          "$commandId": {
+            ".validate": "newData.hasChildren(['command', 'timestamp'])"
+          }
+        }
+      }
+    },
+    
+    "users": {
+      "$uid": {
+        ".read": "$uid === auth.uid",
+        ".write": "$uid === auth.uid",
+        "chairs": {
+          ".read": "$uid === auth.uid",
+          ".write": "$uid === auth.uid"
+        }
+      }
+    },
+    
     "rooms": {
       ".read": "auth != null",
       ".write": false,
