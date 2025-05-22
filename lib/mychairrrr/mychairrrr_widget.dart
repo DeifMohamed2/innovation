@@ -8,154 +8,9 @@ import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:async';
-import 'package:flutter_joystick/flutter_joystick.dart';
 import 'dart:math' as math;
 import 'mychairrrr_model.dart';
 export 'mychairrrr_model.dart';
-
-// Custom painter for joystick background with grid lines
-class JoystickBackgroundPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final radius = size.width / 2;
-
-    // Draw crosshair lines
-    final paint = Paint()
-      ..color = Colors.white.withOpacity(0.3)
-      ..strokeWidth = 1
-      ..style = PaintingStyle.stroke;
-
-    // Horizontal line
-    canvas.drawLine(
-      Offset(0, center.dy),
-      Offset(size.width, center.dy),
-      paint,
-    );
-
-    // Vertical line
-    canvas.drawLine(
-      Offset(center.dx, 0),
-      Offset(center.dx, size.height),
-      paint,
-    );
-
-    // Draw concentric circles
-    for (double i = 0.3; i <= 0.9; i += 0.3) {
-      canvas.drawCircle(
-        center,
-        radius * i,
-        paint,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(CustomPainter oldDelegate) => false;
-}
-
-// Custom painter for direction indicator line
-class DirectionIndicatorPainter extends CustomPainter {
-  final double x;
-  final double y;
-
-  DirectionIndicatorPainter({required this.x, required this.y});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-
-    // Calculate magnitude for color intensity
-    final magnitude = math.sqrt(x * x + y * y);
-    final normalizedMagnitude = math.min(1.0, magnitude);
-
-    // Calculate end point with increased visibility at edges
-    final endPoint = Offset(
-      center.dx + (x * size.width / 2 * 0.8),
-      center.dy + (y * size.height / 2 * 0.8),
-    );
-
-    // Draw direction line with gradient for better visibility
-    final paint = Paint()
-      ..color = Colors.white.withOpacity(0.7 * normalizedMagnitude)
-      ..strokeWidth = 3
-      ..style = PaintingStyle.stroke;
-
-    canvas.drawLine(center, endPoint, paint);
-
-    // Draw arrow at the end of the line
-    final arrowSize = 12.0;
-    final angle = math.atan2(endPoint.dy - center.dy, endPoint.dx - center.dx);
-
-    final arrowPath = Path();
-    arrowPath.moveTo(endPoint.dx, endPoint.dy);
-    arrowPath.lineTo(
-      endPoint.dx - arrowSize * math.cos(angle - math.pi / 6),
-      endPoint.dy - arrowSize * math.sin(angle - math.pi / 6),
-    );
-    arrowPath.lineTo(
-      endPoint.dx - arrowSize * math.cos(angle + math.pi / 6),
-      endPoint.dy - arrowSize * math.sin(angle + math.pi / 6),
-    );
-    arrowPath.close();
-
-    final arrowPaint = Paint()
-      ..color = Colors.white.withOpacity(0.9 * normalizedMagnitude)
-      ..style = PaintingStyle.fill;
-
-    canvas.drawPath(arrowPath, arrowPaint);
-
-    // Add direction text for clarity
-    final directionText = _getDirectionText(x, y);
-    if (directionText.isNotEmpty && magnitude > 0.3) {
-      final textSpan = TextSpan(
-        text: directionText,
-        style: TextStyle(
-          color: Colors.white.withOpacity(0.9 * normalizedMagnitude),
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
-        ),
-      );
-
-      final textPainter = TextPainter(
-        text: textSpan,
-        textDirection: ui.TextDirection.ltr,
-        textAlign: TextAlign.center,
-      );
-
-      textPainter.layout();
-
-      // Position text near the arrow but not on top of it
-      final textOffset = Offset(
-        center.dx + (x * size.width / 4),
-        center.dy + (y * size.height / 4) - 15,
-      );
-
-      textPainter.paint(canvas, textOffset);
-    }
-  }
-
-  String _getDirectionText(double x, double y) {
-    if (x.abs() < 0.3 && y.abs() < 0.3) return '';
-
-    List<String> directions = [];
-
-    if (y < -0.3)
-      directions.add('Forward');
-    else if (y > 0.3) directions.add('Backward');
-
-    if (x < -0.3)
-      directions.add('Left');
-    else if (x > 0.3) directions.add('Right');
-
-    return directions.join(' + ');
-  }
-
-  @override
-  bool shouldRepaint(DirectionIndicatorPainter oldDelegate) {
-    return x != oldDelegate.x || y != oldDelegate.y;
-  }
-}
 
 class MychairrrrWidget extends StatefulWidget {
   const MychairrrrWidget({super.key});
@@ -168,7 +23,7 @@ class MychairrrrWidget extends StatefulWidget {
 }
 
 class _MychairrrrWidgetState extends State<MychairrrrWidget> {
-  late MychairrrrModel _model;
+  MychairrrrModel _model = MychairrrrModel();
   final DatabaseReference _database = FirebaseDatabase.instance.ref();
   final FirebaseAuth _auth = FirebaseAuth.instance;
   String? selectedChairId;
@@ -184,12 +39,19 @@ class _MychairrrrWidgetState extends State<MychairrrrWidget> {
 
   final scaffoldKey = GlobalKey<ScaffoldState>();
 
+  // Add a timer to periodically update the movement state from Firebase
+  Timer? _stateUpdateTimer;
+
   @override
   void initState() {
     super.initState();
-    _model = createModel(context, () => MychairrrrModel());
     _loadUserChairs();
     _loadAvailableChairs();
+
+    // Start a timer to update the movement state every second
+    _stateUpdateTimer = Timer.periodic(Duration(milliseconds: 500), (timer) {
+      _updateMovementState();
+    });
   }
 
   Future<void> _loadAvailableChairs() async {
@@ -377,28 +239,6 @@ class _MychairrrrWidgetState extends State<MychairrrrWidget> {
     });
   }
 
-  Future<void> _sendJoystickCommand(double x, double y) async {
-    if (selectedChairId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No chair selected')),
-      );
-      return;
-    }
-
-    // Convert joystick values from -1.0 to 1.0 to -100 to 100 range
-    int xValue = (x * 100).round();
-    int yValue = (y * -100).round(); // Invert Y axis so up is positive
-
-    await _database.child('chairs/$selectedChairId/commands').push().set({
-      'command': 'joystick',
-      'value': {
-        'x': xValue,
-        'y': yValue,
-      },
-      'timestamp': ServerValue.timestamp,
-    });
-  }
-
   Future<void> _sendSpeedCommand(double speed) async {
     if (selectedChairId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -414,9 +254,52 @@ class _MychairrrrWidgetState extends State<MychairrrrWidget> {
     });
   }
 
+  // Method to update the current movement state from Firebase
+  Future<void> _updateMovementState() async {
+    if (selectedChairId == null) return;
+
+    try {
+      final movementState =
+          await _database.child('chairs/$selectedChairId/movement_state').get();
+
+      if (movementState.exists && mounted) {
+        final data = movementState.value as Map<dynamic, dynamic>;
+        setState(() {
+          _model.currentDirection = data['direction']?.toString() ?? 'stop';
+          _model.isMoving = _model.currentDirection != 'stop';
+        });
+      }
+    } catch (e) {
+      print('Error updating movement state: $e');
+    }
+  }
+
+  // Update the _sendDirectionCommand method
+  Future<void> _sendDirectionCommand(String direction) async {
+    if (selectedChairId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No chair selected')),
+      );
+      return;
+    }
+
+    // Update the local model state
+    setState(() {
+      _model.currentDirection = direction;
+      _model.isMoving = direction != 'stop';
+    });
+
+    // Send the command to Firebase
+    await _database.child('chairs/$selectedChairId/commands').push().set({
+      'command': 'direction',
+      'value': direction,
+      'timestamp': ServerValue.timestamp,
+    });
+  }
+
   @override
   void dispose() {
-    // Cancel all stream subscriptions
+    _stateUpdateTimer?.cancel();
     _chairsSubscription?.cancel();
     _userChairsSubscription?.cancel();
     _selectedChairSubscription?.cancel();
@@ -684,260 +567,138 @@ class _MychairrrrWidgetState extends State<MychairrrrWidget> {
                                     ),
                                     SizedBox(height: 24),
 
-                                    // Joystick Control
+                                    // Advanced Direction Controls - replaces joystick
                                     Center(
                                       child: Column(
                                         children: [
                                           Text(
-                                            'Joystick Control',
+                                            'Directional Controls',
                                             style: TextStyle(
                                               color: Colors.white,
                                               fontWeight: FontWeight.bold,
                                               fontSize: 16,
                                             ),
                                           ),
-                                          SizedBox(height: 16),
-                                          Container(
-                                            height: 200,
-                                            width: 200,
-                                            decoration: BoxDecoration(
-                                              color: Color(0xFF2A2A2A),
-                                              shape: BoxShape.circle,
-                                              boxShadow: [
-                                                BoxShadow(
-                                                  color: Colors.black26,
-                                                  blurRadius: 10,
-                                                  spreadRadius: 1,
-                                                ),
-                                              ],
-                                            ),
-                                            child: Stack(
-                                              children: [
-                                                // Joystick background with grid
-                                                Container(
-                                                  width: double.infinity,
-                                                  height: double.infinity,
-                                                  decoration: BoxDecoration(
-                                                    shape: BoxShape.circle,
-                                                    color: Color(0xFF333333),
-                                                  ),
-                                                  child: CustomPaint(
-                                                    painter:
-                                                        JoystickBackgroundPainter(),
-                                                  ),
-                                                ),
+                                          SizedBox(height: 24),
 
-                                                // Center dot (fixed reference point)
-                                                Center(
-                                                  child: Container(
-                                                    width: 8,
-                                                    height: 8,
-                                                    decoration: BoxDecoration(
-                                                      color: Colors.white
-                                                          .withOpacity(0.5),
-                                                      shape: BoxShape.circle,
-                                                    ),
-                                                  ),
-                                                ),
-
-                                                // Direction indicator line
-                                                if (_model.isJoystickActive)
-                                                  CustomPaint(
-                                                    size: Size(200, 200),
-                                                    painter:
-                                                        DirectionIndicatorPainter(
-                                                      x: _model.joystickX,
-                                                      y: _model.joystickY,
-                                                    ),
-                                                  ),
-
-                                                // Position indicator that moves with joystick
-                                                Center(
-                                                  child: Transform.translate(
-                                                    offset: Offset(
-                                                      _model.joystickX * 70,
-                                                      _model.joystickY * 70,
-                                                    ),
-                                                    child: Container(
-                                                      width: 30,
-                                                      height: 30,
-                                                      decoration: BoxDecoration(
-                                                        color:
-                                                            Color(0xFF4B0082),
-                                                        shape: BoxShape.circle,
-                                                        border: Border.all(
-                                                          color: Colors.white,
-                                                          width: 2,
-                                                        ),
-                                                        boxShadow: [
-                                                          BoxShadow(
-                                                            color:
-                                                                Colors.black45,
-                                                            blurRadius: 8,
-                                                            spreadRadius: 2,
-                                                          ),
-                                                        ],
-                                                      ),
-                                                      child: Center(
-                                                        child: Container(
-                                                          width: 10,
-                                                          height: 10,
-                                                          decoration:
-                                                              BoxDecoration(
-                                                            color: Colors.white,
-                                                            shape:
-                                                                BoxShape.circle,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ),
-
-                                                // Invisible Joystick for touch detection
-                                                Positioned.fill(
-                                                  child: Joystick(
-                                                    mode: JoystickMode.all,
-                                                    period: Duration(
-                                                        milliseconds: 50),
-                                                    listener: (details) {
-                                                      setState(() {
-                                                        _model.joystickX =
-                                                            details.x;
-                                                        _model.joystickY =
-                                                            details.y;
-                                                        _model.isJoystickActive =
-                                                            details.x != 0 ||
-                                                                details.y != 0;
-                                                      });
-
-                                                      if (details.x.abs() >
-                                                              0.05 ||
-                                                          details.y.abs() >
-                                                              0.05) {
-                                                        _sendJoystickCommand(
-                                                            details.x,
-                                                            details.y);
-                                                      } else {
-                                                        _sendCommand('stop');
-                                                      }
-                                                    },
-                                                    base: Container(
-                                                      color: Colors.transparent,
-                                                    ),
-                                                    stick: Container(
-                                                      color: Colors.transparent,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
+                                          // First row: Forward-Left, Forward, Forward-Right
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
+                                            children: [
+                                              // Forward-Left
+                                              _buildDirectionButton(
+                                                icon: Icons.north_west,
+                                                label: "Forward-Left",
+                                                onPressed: () =>
+                                                    _sendDirectionCommand(
+                                                        'forward-left'),
+                                              ),
+                                              SizedBox(width: 12),
+                                              // Forward
+                                              _buildDirectionButton(
+                                                icon: Icons.arrow_upward,
+                                                label: "Forward",
+                                                onPressed: () =>
+                                                    _sendCommand('forward'),
+                                                size: 70.0,
+                                              ),
+                                              SizedBox(width: 12),
+                                              // Forward-Right
+                                              _buildDirectionButton(
+                                                icon: Icons.north_east,
+                                                label: "Forward-Right",
+                                                onPressed: () =>
+                                                    _sendDirectionCommand(
+                                                        'forward-right'),
+                                              ),
+                                            ],
                                           ),
-                                          SizedBox(height: 16),
-                                          Text(
-                                            _model.isJoystickActive
-                                                ? 'Moving: ${_getDirectionText(_model.joystickX, _model.joystickY)}'
-                                                : 'Centered',
-                                            style: TextStyle(
-                                              color: Colors.white,
-                                              fontWeight: FontWeight.bold,
-                                            ),
+                                          SizedBox(height: 12),
+
+                                          // Second row: Left, Stop, Right
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
+                                            children: [
+                                              // Left
+                                              _buildDirectionButton(
+                                                icon: Icons.arrow_back,
+                                                label: "Left",
+                                                onPressed: () =>
+                                                    _sendCommand('left'),
+                                                size: 70.0,
+                                              ),
+                                              SizedBox(width: 12),
+                                              // Stop
+                                              _buildDirectionButton(
+                                                icon:
+                                                    Icons.stop_circle_outlined,
+                                                label: "Stop",
+                                                onPressed: () =>
+                                                    _sendCommand('stop'),
+                                                size: 70.0,
+                                                color: Colors.red,
+                                              ),
+                                              SizedBox(width: 12),
+                                              // Right
+                                              _buildDirectionButton(
+                                                icon: Icons.arrow_forward,
+                                                label: "Right",
+                                                onPressed: () =>
+                                                    _sendCommand('right'),
+                                                size: 70.0,
+                                              ),
+                                            ],
+                                          ),
+                                          SizedBox(height: 12),
+
+                                          // Third row: Backward-Left, Backward, Backward-Right
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
+                                            children: [
+                                              // Backward-Left
+                                              _buildDirectionButton(
+                                                icon: Icons.south_west,
+                                                label: "Back-Left",
+                                                onPressed: () =>
+                                                    _sendDirectionCommand(
+                                                        'backward-left'),
+                                              ),
+                                              SizedBox(width: 12),
+                                              // Backward
+                                              _buildDirectionButton(
+                                                icon: Icons.arrow_downward,
+                                                label: "Backward",
+                                                onPressed: () =>
+                                                    _sendCommand('backward'),
+                                                size: 70.0,
+                                              ),
+                                              SizedBox(width: 12),
+                                              // Backward-Right
+                                              _buildDirectionButton(
+                                                icon: Icons.south_east,
+                                                label: "Back-Right",
+                                                onPressed: () =>
+                                                    _sendDirectionCommand(
+                                                        'backward-right'),
+                                              ),
+                                            ],
                                           ),
                                         ],
                                       ),
                                     ),
 
-                                    SizedBox(height: 32),
-                                    Center(
-                                      child: Text(
-                                        'Quick Controls',
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 16,
-                                        ),
-                                      ),
-                                    ),
                                     SizedBox(height: 16),
-
-                                    // Quick Control Buttons
-                                    Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        Column(
-                                          children: [
-                                            FlutterFlowIconButton(
-                                              borderRadius: 35.0,
-                                              buttonSize: 60.0,
-                                              fillColor: Color(0xFF4B0082),
-                                              icon: Icon(
-                                                Icons.keyboard_arrow_up,
-                                                color: Colors.white,
-                                                size: 30.0,
-                                              ),
-                                              onPressed: () =>
-                                                  _sendCommand('forward'),
-                                            ),
-                                            SizedBox(height: 16),
-                                            Row(
-                                              children: [
-                                                FlutterFlowIconButton(
-                                                  borderRadius: 35.0,
-                                                  buttonSize: 60.0,
-                                                  fillColor: Color(0xFF4B0082),
-                                                  icon: Icon(
-                                                    Icons.keyboard_arrow_left,
-                                                    color: Colors.white,
-                                                    size: 30.0,
-                                                  ),
-                                                  onPressed: () =>
-                                                      _sendCommand('left'),
-                                                ),
-                                                SizedBox(width: 16),
-                                                FlutterFlowIconButton(
-                                                  borderRadius: 35.0,
-                                                  buttonSize: 60.0,
-                                                  fillColor: Color(0xFF4B0082),
-                                                  icon: Icon(
-                                                    Icons.stop,
-                                                    color: Colors.white,
-                                                    size: 30.0,
-                                                  ),
-                                                  onPressed: () =>
-                                                      _sendCommand('stop'),
-                                                ),
-                                                SizedBox(width: 16),
-                                                FlutterFlowIconButton(
-                                                  borderRadius: 35.0,
-                                                  buttonSize: 60.0,
-                                                  fillColor: Color(0xFF4B0082),
-                                                  icon: Icon(
-                                                    Icons.keyboard_arrow_right,
-                                                    color: Colors.white,
-                                                    size: 30.0,
-                                                  ),
-                                                  onPressed: () =>
-                                                      _sendCommand('right'),
-                                                ),
-                                              ],
-                                            ),
-                                            SizedBox(height: 16),
-                                            FlutterFlowIconButton(
-                                              borderRadius: 35.0,
-                                              buttonSize: 60.0,
-                                              fillColor: Color(0xFF4B0082),
-                                              icon: Icon(
-                                                Icons.keyboard_arrow_down,
-                                                color: Colors.white,
-                                                size: 30.0,
-                                              ),
-                                              onPressed: () =>
-                                                  _sendCommand('backward'),
-                                            ),
-                                          ],
-                                        ),
-                                      ],
+                                    Divider(color: Colors.white24),
+                                    SizedBox(height: 16),
+                                    Text(
+                                      'Direction: ${_formatDirectionName(_model.currentDirection)}',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -955,28 +716,6 @@ class _MychairrrrWidgetState extends State<MychairrrrWidget> {
         ),
       ),
     );
-  }
-
-  String _getDirectionText(double x, double y) {
-    String direction = '';
-
-    if (y < -0.3) {
-      direction += 'Forward';
-    } else if (y > 0.3) {
-      direction += 'Backward';
-    }
-
-    if (direction.isNotEmpty && (x < -0.3 || x > 0.3)) {
-      direction += ' + ';
-    }
-
-    if (x < -0.3) {
-      direction += 'Left';
-    } else if (x > 0.3) {
-      direction += 'Right';
-    }
-
-    return direction.isEmpty ? 'Centered' : direction;
   }
 
   Color _getStatusColor(String? status) {
@@ -999,5 +738,75 @@ class _MychairrrrWidgetState extends State<MychairrrrWidget> {
 
     // Convert first letter to uppercase
     return status.substring(0, 1).toUpperCase() + status.substring(1);
+  }
+
+  Widget _buildDirectionButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onPressed,
+    double size = 60.0,
+    Color color = const Color(0xFF4B0082),
+  }) {
+    return Column(
+      children: [
+        Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(size / 2),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black26,
+                blurRadius: 4,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+          child: IconButton(
+            icon: Icon(
+              icon,
+              color: Colors.white,
+              size: size * 0.5,
+            ),
+            onPressed: onPressed,
+          ),
+        ),
+        SizedBox(height: 4),
+        Text(
+          label,
+          style: TextStyle(
+            color: Colors.white70,
+            fontSize: 12,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Add this helper method to format direction names for display
+  String _formatDirectionName(String direction) {
+    switch (direction) {
+      case 'forward':
+        return 'Forward';
+      case 'backward':
+        return 'Backward';
+      case 'left':
+        return 'Left';
+      case 'right':
+        return 'Right';
+      case 'forward-left':
+        return 'Forward-Left';
+      case 'forward-right':
+        return 'Forward-Right';
+      case 'backward-left':
+        return 'Backward-Left';
+      case 'backward-right':
+        return 'Backward-Right';
+      case 'stop':
+        return 'Stopped';
+      default:
+        return direction.isEmpty ? 'Stopped' : direction;
+    }
   }
 }

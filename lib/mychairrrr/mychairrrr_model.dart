@@ -7,10 +7,9 @@ class MychairrrrModel extends FlutterFlowModel<MychairrrrWidget> {
   // State field(s) for SpeedSlider widget.
   double? speedSliderValue;
 
-  // State fields for joystick
-  double joystickX = 0.0;
-  double joystickY = 0.0;
-  bool isJoystickActive = false;
+  // Movement state fields to track current direction
+  String currentDirection = 'stop';
+  bool isMoving = false;
 
   @override
   void initState(BuildContext context) {

@@ -5,17 +5,22 @@
 #include <FirebaseESP32.h>
 
 // WiFi credentials
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
+const char* ssid = "deif";
+const char* password = "123456789";
 
 // Firebase Realtime Database settings
 #define FIREBASE_HOST "smarthub-60812-default-rtdb.firebaseio.com"
 #define FIREBASE_AUTH "3umhMyRsTTO9bHHaufhOrIJbuUYesQ8VVu1y0jk6"
 FirebaseData firebaseData;
+FirebaseConfig firebaseConfig;
+FirebaseAuth firebaseAuth;
 
 // IR remote settings
 const uint16_t kIrLedPin = 19;  // GPIO pin for IR LED
 IRsend irsend(kIrLedPin);
+
+// LED indicator pin
+const int LED_INDICATOR_PIN = 2; // Change to an available GPIO pin on your ESP32
 
 // Servo settings
 #define MAX_SERVOS 5
@@ -64,11 +69,13 @@ uint16_t rawDataOff[RAW_DATA_LEN_OFF] = {
 // Timing variables
 unsigned long lastLedToggle = 0;
 unsigned long lastFirebaseCheck = 0;
+unsigned long lastStatusUpdate = 0;
 
 // Device states
 bool acState = false;
 bool lightStates[MAX_LIGHTS] = {false};
 bool doorStates[MAX_SERVOS] = {false};
+bool firebaseConnected = false;
 
 // Room configuration maps
 struct RoomConfig {
@@ -86,23 +93,48 @@ RoomConfig rooms[10]; // Support up to 10 rooms
 int roomCount = 0;
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n\n=== SmartHub System Starting ===");
   
   // Connect to WiFi
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
+  int wifiAttempts = 0;
+  while (WiFi.status() != WL_CONNECTED && wifiAttempts < 20) {
     delay(500);
     Serial.print(".");
+    wifiAttempts++;
   }
   Serial.println();
-  Serial.print("Connected to WiFi with IP: ");
-  Serial.println(WiFi.localIP());
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("Connected to WiFi with IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("Failed to connect to WiFi! Check credentials.");
+  }
   
   // Initialize Firebase
-  Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+  firebaseConfig.database_url = FIREBASE_HOST;
+  firebaseConfig.api_key = FIREBASE_AUTH;
+  
+  Firebase.begin(&firebaseConfig, &firebaseAuth);
   Firebase.reconnectWiFi(true);
-  Serial.println("Connected to Firebase");
+  
+  // Test Firebase connection
+  if (Firebase.ready()) {
+    firebaseConnected = true;
+    Serial.println("Successfully connected to Firebase!");
+    
+    // Set initial online status
+    Firebase.setBool(firebaseData, "/esp_status/online", true);
+    Firebase.setString(firebaseData, "/esp_status/ip", WiFi.localIP().toString());
+    Firebase.setString(firebaseData, "/esp_status/last_boot", String(millis()));
+  } else {
+    Serial.println("Failed to connect to Firebase. Check credentials and internet connection.");
+    Serial.println("Error: " + firebaseData.errorReason());
+  }
   
   // Initialize IR sender
   irsend.begin();
@@ -112,11 +144,20 @@ void setup() {
   for (int i = 0; i < MAX_LIGHTS; i++) {
     pinMode(lightPins[i], OUTPUT);
     digitalWrite(lightPins[i], LOW);
+    Serial.print("Initialized LED pin ");
+    Serial.println(lightPins[i]);
   }
-  Serial.println("LEDs initialized");
+  
+  // Initialize LED indicator pin
+  pinMode(LED_INDICATOR_PIN, OUTPUT);
+  Serial.println("LED indicator initialized on pin " + String(LED_INDICATOR_PIN));
   
   // Load room configurations
-  loadRoomConfigurations();
+  if (firebaseConnected) {
+    loadRoomConfigurations();
+  } else {
+    Serial.println("Skipping room configuration load due to Firebase connection issue");
+  }
 
   // Initialize servos based on room configurations
   for (int i = 0; i < roomCount; i++) {
@@ -125,21 +166,49 @@ void setup() {
       if (servoIndex >= 0) {
         servos[servoIndex].attach(rooms[i].doorPin);
         servos[servoIndex].write(rooms[i].doorStatus ? 180 : 0);
+        Serial.println("Initialized servo for room " + rooms[i].name + " on pin " + String(rooms[i].doorPin));
       }
     }
   }
-  Serial.println("Servos initialized");
   
-  Serial.println("Setup completed");
+  Serial.println("=== Setup completed ===");
 }
 
 void loop() {
   unsigned long currentMillis = millis();
   
+  // Check Firebase connection and reconnect if needed
+  if (!Firebase.ready()) {
+    if (firebaseConnected) {
+      Serial.println("Firebase connection lost. Attempting to reconnect...");
+      firebaseConnected = false;
+    }
+    
+    if (Firebase.ready()) {
+      Serial.println("Firebase reconnected!");
+      firebaseConnected = true;
+      Firebase.setBool(firebaseData, "/esp_status/online", true);
+    }
+  }
+  
   // Check Firebase for commands every 2 seconds
   if (currentMillis - lastFirebaseCheck >= 2000) {
     lastFirebaseCheck = currentMillis;
-    checkFirebaseCommands();
+    
+    if (firebaseConnected) {
+      Serial.println("Checking for Firebase updates...");
+      checkFirebaseCommands();
+    }
+  }
+  
+  // Update status to Firebase every 30 seconds
+  if (currentMillis - lastStatusUpdate >= 30000) {
+    lastStatusUpdate = currentMillis;
+    
+    if (firebaseConnected) {
+      Serial.println("Updating device status to Firebase...");
+      updateDeviceStatus();
+    }
   }
   
   // LED indicator blink for system status
@@ -147,24 +216,33 @@ void loop() {
     lastLedToggle = currentMillis;
     static bool ledIndicatorState = false;
     ledIndicatorState = !ledIndicatorState;
-    digitalWrite(LED_BUILTIN, ledIndicatorState ? HIGH : LOW);
+    digitalWrite(LED_INDICATOR_PIN, ledIndicatorState ? HIGH : LOW);
   }
 }
 
 void loadRoomConfigurations() {
+  Serial.println("Loading room configurations from Firebase...");
+  
   if (Firebase.getJSON(firebaseData, "/rooms")) {
     FirebaseJson &json = firebaseData.jsonObject();
-    FirebaseJsonData jsonData;
     size_t count = json.iteratorBegin();
     roomCount = 0;
     
+    Serial.print("Found ");
+    Serial.print(count);
+    Serial.println(" rooms in database");
+    
     for (size_t i = 0; i < count && i < 10; i++) {
-      json.iteratorGet(i, jsonData);
-      if (jsonData.type == "object") {
+      String key, value;
+      int type = 0;
+      
+      json.iteratorGet(i, type, key, value);
+      
+      if (type == FirebaseJson::JSON_OBJECT) {
         FirebaseJson roomJson;
-        jsonData.getJSON(roomJson);
+        roomJson.setJsonData(value);
         
-        String roomId = jsonData.key;
+        String roomId = key;
         rooms[roomCount].id = roomId;
         
         FirebaseJsonData roomData;
@@ -203,7 +281,33 @@ void loadRoomConfigurations() {
         }
         
         Serial.print("Loaded room: ");
-        Serial.println(rooms[roomCount].name);
+        Serial.print(rooms[roomCount].name);
+        Serial.print(" (ID: ");
+        Serial.print(rooms[roomCount].id);
+        Serial.println(")");
+        
+        Serial.print("  - Light: ");
+        if (rooms[roomCount].hasLights) {
+          Serial.print("YES (Pin: ");
+          Serial.print(rooms[roomCount].lightPin);
+          Serial.print(", Status: ");
+          Serial.print(rooms[roomCount].lightStatus ? "ON" : "OFF");
+          Serial.println(")");
+        } else {
+          Serial.println("NO");
+        }
+        
+        Serial.print("  - Door: ");
+        if (rooms[roomCount].hasDoor) {
+          Serial.print("YES (Pin: ");
+          Serial.print(rooms[roomCount].doorPin);
+          Serial.print(", Status: ");
+          Serial.print(rooms[roomCount].doorStatus ? "OPEN" : "CLOSED");
+          Serial.println(")");
+        } else {
+          Serial.println("NO");
+        }
+        
         roomCount++;
       }
     }
@@ -213,7 +317,7 @@ void loadRoomConfigurations() {
     Serial.println(roomCount);
   } else {
     Serial.println("Failed to load room configurations");
-    Serial.println(firebaseData.errorReason());
+    Serial.println("Error: " + firebaseData.errorReason());
   }
 }
 
@@ -240,9 +344,14 @@ void checkFirebaseCommands() {
   if (Firebase.getBool(firebaseData, "/esp_control/ac")) {
     bool newAcState = firebaseData.boolData();
     if (newAcState != acState) {
+      Serial.print("AC state change detected in Firebase: ");
+      Serial.println(newAcState ? "ON" : "OFF");
       acState = newAcState;
       controlAC(acState);
     }
+  } else {
+    Serial.print("Failed to get AC state: ");
+    Serial.println(firebaseData.errorReason());
   }
   
   // Then check each room for updates
@@ -254,9 +363,18 @@ void checkFirebaseCommands() {
       if (Firebase.getBool(firebaseData, roomPath + "/lightStatus")) {
         bool newLightState = firebaseData.boolData();
         if (newLightState != rooms[i].lightStatus) {
+          Serial.print("Light state change detected for room ");
+          Serial.print(rooms[i].name);
+          Serial.print(": ");
+          Serial.println(newLightState ? "ON" : "OFF");
           rooms[i].lightStatus = newLightState;
           controlLight(i, newLightState);
         }
+      } else {
+        Serial.print("Failed to get light state for room ");
+        Serial.print(rooms[i].name);
+        Serial.print(": ");
+        Serial.println(firebaseData.errorReason());
       }
     }
     
@@ -265,15 +383,23 @@ void checkFirebaseCommands() {
       if (Firebase.getBool(firebaseData, roomPath + "/doorStatus")) {
         bool newDoorState = firebaseData.boolData();
         if (newDoorState != rooms[i].doorStatus) {
+          Serial.print("Door state change detected for room ");
+          Serial.print(rooms[i].name);
+          Serial.print(": ");
+          Serial.println(newDoorState ? "OPEN" : "CLOSED");
           rooms[i].doorStatus = newDoorState;
           controlDoor(i, newDoorState);
         }
+      } else {
+        Serial.print("Failed to get door state for room ");
+        Serial.print(rooms[i].name);
+        Serial.print(": ");
+        Serial.println(firebaseData.errorReason());
       }
     }
   }
   
-  // Update device status back to Firebase
-  updateDeviceStatus();
+  Serial.println("Firebase check completed");
 }
 
 void updateDeviceStatus() {
@@ -282,22 +408,52 @@ void updateDeviceStatus() {
   // Add AC status
   statusJson.set("ac", acState);
   
-  // Add timestamp
+  // Add timestamp and device info
   statusJson.set("last_update", String(millis()));
+  statusJson.set("uptime_seconds", millis() / 1000);
+  statusJson.set("online", true);
+  statusJson.set("ip", WiFi.localIP().toString());
+  statusJson.set("wifi_strength", WiFi.RSSI());
+  
+  // Update overall ESP status
+  if (Firebase.updateNode(firebaseData, "/esp_status", statusJson)) {
+    Serial.println("Device status updated to Firebase successfully");
+  } else {
+    Serial.print("Failed to update device status: ");
+    Serial.println(firebaseData.errorReason());
+  }
   
   // Add room specific statuses
   for (int i = 0; i < roomCount; i++) {
     String roomId = rooms[i].id;
+    bool updateSuccess = true;
+    
     if (rooms[i].hasLights) {
-      Firebase.setBool(firebaseData, "/rooms/" + roomId + "/lightStatus", rooms[i].lightStatus);
+      if (!Firebase.setBool(firebaseData, "/rooms/" + roomId + "/lightStatus", rooms[i].lightStatus)) {
+        Serial.print("Failed to update light status for room ");
+        Serial.print(rooms[i].name);
+        Serial.print(": ");
+        Serial.println(firebaseData.errorReason());
+        updateSuccess = false;
+      }
     }
+    
     if (rooms[i].hasDoor) {
-      Firebase.setBool(firebaseData, "/rooms/" + roomId + "/doorStatus", rooms[i].doorStatus);
+      if (!Firebase.setBool(firebaseData, "/rooms/" + roomId + "/doorStatus", rooms[i].doorStatus)) {
+        Serial.print("Failed to update door status for room ");
+        Serial.print(rooms[i].name);
+        Serial.print(": ");
+        Serial.println(firebaseData.errorReason());
+        updateSuccess = false;
+      }
+    }
+    
+    if (updateSuccess) {
+      Serial.print("Status for room ");
+      Serial.print(rooms[i].name);
+      Serial.println(" updated successfully");
     }
   }
-  
-  // Update overall ESP status
-  Firebase.updateNode(firebaseData, "/esp_status", statusJson);
 }
 
 void controlLight(int roomIndex, bool state) {
@@ -313,6 +469,16 @@ void controlLight(int roomIndex, bool state) {
   
   digitalWrite(room.lightPin, state ? HIGH : LOW);
   room.lightStatus = state;
+  
+  // Update Firebase immediately to reflect the change
+  if (firebaseConnected) {
+    if (Firebase.setBool(firebaseData, "/rooms/" + room.id + "/lightStatus", state)) {
+      Serial.println("Light status updated in Firebase");
+    } else {
+      Serial.print("Failed to update light status in Firebase: ");
+      Serial.println(firebaseData.errorReason());
+    }
+  }
 }
 
 void controlDoor(int roomIndex, bool state) {
@@ -329,8 +495,28 @@ void controlDoor(int roomIndex, bool state) {
   int servoIndex = findServoIndexByPin(room.doorPin);
   if (servoIndex >= 0) {
     servos[servoIndex].write(state ? 180 : 0);
+    Serial.print("Servo at index ");
+    Serial.print(servoIndex);
+    Serial.print(" on pin ");
+    Serial.print(room.doorPin);
+    Serial.print(" set to ");
+    Serial.println(state ? 180 : 0);
+  } else {
+    Serial.print("Error: Could not find servo index for pin ");
+    Serial.println(room.doorPin);
   }
+  
   room.doorStatus = state;
+  
+  // Update Firebase immediately to reflect the change
+  if (firebaseConnected) {
+    if (Firebase.setBool(firebaseData, "/rooms/" + room.id + "/doorStatus", state)) {
+      Serial.println("Door status updated in Firebase");
+    } else {
+      Serial.print("Failed to update door status in Firebase: ");
+      Serial.println(firebaseData.errorReason());
+    }
+  }
 }
 
 void controlAC(bool state) {
@@ -340,7 +526,19 @@ void controlAC(bool state) {
   // Send IR command to AC
   if (state) {
     irsend.sendRaw(rawDataOn, RAW_DATA_LEN_ON, 38);
+    Serial.println("IR command sent to turn AC ON");
   } else {
     irsend.sendRaw(rawDataOff, RAW_DATA_LEN_OFF, 38);
+    Serial.println("IR command sent to turn AC OFF");
+  }
+  
+  // Update Firebase immediately to reflect the change
+  if (firebaseConnected) {
+    if (Firebase.setBool(firebaseData, "/esp_control/ac", state)) {
+      Serial.println("AC status updated in Firebase");
+    } else {
+      Serial.print("Failed to update AC status in Firebase: ");
+      Serial.println(firebaseData.errorReason());
+    }
   }
 } 
